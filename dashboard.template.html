@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NQ volatility study · RJ Hill</title>
+<style>
+  :root { color-scheme: light; --ink:#162e37; --muted:#52646b; --rule:#d3dedb; --green:#026c65; --orange:#a84525; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:#f5f7f4; color:var(--ink); font:16px/1.45 Inter,"Segoe UI",sans-serif; }
+  main { width:min(1120px,100%); margin:auto; padding:26px 36px 48px; }
+  .byline, footer, .legend, .controls, .heading-row, .date-controls, .readouts { display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+  .byline { justify-content:space-between; border-bottom:1px solid var(--rule); padding-bottom:13px; color:var(--muted); font-size:.88rem; }
+  h1, h2, p { margin:0; }
+  h1 { font:500 clamp(2.35rem,5vw,4.2rem)/1.08 Georgia,serif; letter-spacing:-.045em; margin:24px 0 10px; }
+  h2 { font:500 1.65rem/1.2 Georgia,serif; letter-spacing:-.025em; }
+  .lede, .explain { color:var(--muted); max-width:78ch; }
+  .controls { margin:24px 0 18px; align-items:end; }
+  label, .metric span, .readouts span { display:block; font-size:.82rem; color:var(--muted); margin-bottom:4px; }
+  button, select { color:var(--ink); background:#fff; border:1px solid #9fada9; border-radius:5px; padding:8px 12px; font:inherit; }
+  button { cursor:pointer; }
+  button:hover, select:hover { border-color:var(--green); }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline:3px solid #348990; outline-offset:2px; }
+  button:disabled { opacity:.4; cursor:default; }
+  .metrics { display:grid; grid-template-columns:repeat(4,1fr); border-block:1px solid var(--rule); margin:14px 0 24px; }
+  .metric { padding:14px 16px 14px 0; }
+  .metric strong { font:500 clamp(1.45rem,3vw,2rem)/1.2 Georgia,serif; }
+  section { background:#fff; border:1px solid var(--rule); border-radius:8px; padding:20px 22px; margin-top:16px; }
+  .heading-row { align-items:baseline; justify-content:space-between; }
+  .legend { font-size:.85rem; color:var(--muted); gap:13px; }
+  .swatch { display:inline-block; width:14px; height:10px; margin-right:5px; vertical-align:middle; }
+  .band { background:#c9e8e3; border:1px solid var(--green); }
+  .dot,.out { width:8px; height:8px; border-radius:50%; background:#233f4d; }
+  .out { background:var(--orange); }
+  canvas { display:block; width:100%; height:275px; margin:8px 0 3px; }
+  .date-controls { gap:8px; }
+  .date-controls button { font-size:.84rem; }
+  input[type=range] { flex:1; min-width:80px; accent-color:var(--green); }
+  .readouts { border-top:1px solid var(--rule); padding-top:12px; margin-top:14px; gap:12px 28px; font-variant-numeric:tabular-nums; }
+  .readouts strong { font-weight:600; }
+  .tablewrap { overflow:auto; }
+  table { width:100%; border-collapse:collapse; margin:12px 0; text-align:right; font-variant-numeric:tabular-nums; }
+  th,td { padding:9px 10px; border-bottom:1px solid var(--rule); white-space:nowrap; }
+  th:first-child,td:first-child { text-align:left; }
+  thead th { color:var(--muted); font-size:.8rem; font-weight:600; }
+  .selected { background:#eaf5f2; }
+  .explain { font-size:.9rem; }
+  footer { justify-content:space-between; margin-top:18px; color:var(--muted); font-size:.83rem; }
+  a { color:var(--green); }
+  @media (max-width:650px) {
+    main { padding:16px 12px 32px; } .metrics { grid-template-columns:1fr 1fr; }
+    section { padding:15px 12px; } .byline { gap:6px; } canvas { height:235px; }
+    .readouts { gap:10px 18px; } .controls { gap:10px; } select { max-width:100%; }
+  }
+</style>
+</head>
+<body><main>
+<header>
+  <div class="byline"><span>RJ Hill · Quantitative research</span><span>Nasdaq-100 E-mini futures · NQ=F</span></div>
+  <h1>Forecasting daily NQ volatility</h1>
+  <p class="lede">After each close, how much variation should we expect in the next close-to-close return? Compare three models on the same historical sessions.</p>
+</header>
+<div class="controls">
+  <div><label for="model">Model</label><select id="model"></select></div>
+  <div><label for="sample">Evaluation sample</label><select id="sample"></select></div>
+</div>
+<div class="metrics">
+  <div class="metric"><span>Forecasts scored</span><strong id="count"></strong></div>
+  <div class="metric"><span>Closes inside ±1σ</span><strong id="coverage"></strong></div>
+  <div class="metric"><span>Mean band half-width</span><strong id="width"></strong></div>
+  <div class="metric"><span>Loss gap vs. benchmark</span><strong id="gap"></strong></div>
+</div>
+<section aria-labelledby="explorer">
+  <div class="heading-row"><h2 id="explorer">One session at a time</h2>
+    <div class="legend"><span><i class="swatch band"></i>Forecast band</span><span><i class="swatch dot"></i>Return inside</span><span><i class="swatch out"></i>Return outside</span></div>
+  </div>
+  <p class="explain" id="span"></p>
+  <canvas id="plot" role="img" aria-label="Forecast band and subsequent daily returns"></canvas>
+  <div class="date-controls">
+    <button id="previous" aria-label="Previous forecast">←</button>
+    <input type="range" id="session" min="0" step="1" aria-label="Select forecast by target date">
+    <button id="next" aria-label="Next forecast">→</button>
+    <button id="largest">Largest move</button>
+    <button id="last">Last date</button>
+  </div>
+  <div class="readouts" aria-live="polite">
+    <div><span>Data through</span><strong id="cutoff"></strong></div>
+    <div><span>Target close</span><strong id="target"></strong></div>
+    <div><span>Forecast band</span><strong id="range"></strong></div>
+    <div><span>Actual return</span><strong id="actual"></strong></div>
+    <div><span>Outcome</span><strong id="outcome"></strong></div>
+  </div>
+</section>
+<section aria-labelledby="compare">
+  <h2 id="compare">Model comparison</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Model</th><th>Inside / scored</th><th>Mean half-width</th><th>QLIKE gap</th><th>95% interval for gap</th></tr></thead>
+    <tbody id="scores"></tbody>
+  </table></div>
+  <p class="explain" id="sample-note"></p>
+</section>
+<section id="snapshot" aria-labelledby="snapshot-title">
+  <h2 id="snapshot-title">Next forecast at the end of the study</h2>
+  <p class="explain" id="as-of"></p>
+  <div class="readouts">
+    <div><span>Final close</span><strong id="last-price"></strong></div>
+    <div><span>Forecast volatility</span><strong id="next-vol"></strong></div>
+    <div><span>Volatility in NQ points</span><strong id="next-points"></strong></div>
+    <div><span>Next-close reference band</span><strong id="next-band"></strong></div>
+  </div>
+</section>
+<footer><span id="period"></span><span><a href="https://finance.yahoo.com/quote/NQ%3DF/history/">Yahoo Finance data</a> · <a href="https://www.cmegroup.com/trading/equity-index/rolldates.html">CME roll dates</a></span></footer>
+</main>
+<script>
+'use strict';
+const study = __STUDY_JSON__;
+const byId = id => document.getElementById(id);
+const model = byId('model'), sample = byId('sample'), slider = byId('session'), canvas = byId('plot');
+study.models.forEach((name, i) => model.add(new Option(name, i)));
+Object.keys(study.samples).forEach(name => sample.add(new Option(name, name)));
+model.value = '2';
+function signed(value, places) {
+  return (value > 0 ? '+' : value < 0 ? '−' : '') + Math.abs(value).toFixed(places);
+}
+function state() {
+  return {rows:study.samples[sample.value], index:Number(slider.value), column:3 + Number(model.value)};
+}
+function draw() {
+  const {rows, index, column} = state();
+  const first = Math.max(0, index - 59);
+  const view = rows.slice(first, index + 1);
+  const width = canvas.clientWidth, height = canvas.clientHeight;
+  if (!width || !height) return;
+  const scale = window.devicePixelRatio || 1;
+  canvas.width = Math.round(width * scale); canvas.height = Math.round(height * scale);
+  const ctx = canvas.getContext('2d');
+  ctx.scale(scale,scale);
+  const left = 48, right = width - 15, top = 17, bottom = height - 27;
+  const max = Math.max(0.5, ...view.map(r => 100 * Math.max(Math.abs(r[2]), r[column])));
+  const step = max <= 1 ? 0.5 : max <= 2 ? 1 : max <= 5 ? 2 : max <= 10 ? 4 : 5;
+  const limit = Math.ceil(max / step) * step;
+  const x = i => view.length === 1 ? (right + left)/2 : left + (right-left)*i/(view.length-1);
+  const y = pct => top + (bottom-top)*(1-pct/limit)/2;
+  ctx.font = '12px Segoe UI, sans-serif';
+  for (let tick = -limit; tick <= limit; tick += step) {
+    ctx.strokeStyle = tick === 0 ? '#819495' : '#e4eae7';
+    ctx.beginPath(); ctx.moveTo(left,y(tick)); ctx.lineTo(right,y(tick)); ctx.stroke();
+    ctx.textAlign = 'right'; ctx.fillStyle = '#52646b'; ctx.fillText(tick + '%',left-7,y(tick)+4);
+  }
+  // Break the band across excluded periods in the expiry sensitivity check.
+  let start = 0;
+  for (let end = 1; end <= view.length; end++) {
+    if (end < view.length && view[end][0] === view[end-1][1]) continue;
+    ctx.beginPath(); ctx.moveTo(x(start),y(100*view[start][column]));
+    for (let i=start+1;i<end;i++) ctx.lineTo(x(i),y(100*view[i][column]));
+    for (let i=end-1;i>=start;i--) ctx.lineTo(x(i),y(-100*view[i][column]));
+    ctx.closePath(); ctx.fillStyle = 'rgba(16,145,126,.17)'; ctx.fill();
+    ctx.strokeStyle = '#258579'; ctx.lineWidth = 1.15; ctx.stroke(); start = end;
+  }
+  view.forEach((r,i) => {
+    ctx.beginPath(); ctx.arc(x(i),y(100*r[2]),i===view.length-1 ? 5 : 3,0,2*Math.PI);
+    ctx.fillStyle = Math.abs(r[2]) <= r[column] ? '#233f4d' : '#a84525'; ctx.fill();
+  });
+  ctx.fillStyle='#52646b';ctx.textAlign='left';ctx.fillText(view[0][1],left,bottom+20);
+  if (view.length>1) {ctx.textAlign='right';ctx.fillText(view[view.length-1][1],right,bottom+20);}
+  byId('span').textContent = 'Daily returns · ' + view.length + ' eligible session' +
+    (view.length===1 ? '' : 's') + ' ending ' + rows[index][1];
+  canvas.setAttribute('aria-label', 'Daily returns and ' + study.models[Number(model.value)] +
+    ' bands from ' + view[0][1] + ' through ' + rows[index][1]);
+}
+function renderDate() {
+  const {rows,index,column} = state(), r = rows[index];
+  const inside = Math.abs(r[2]) <= r[column];
+  byId('cutoff').textContent = r[0]; byId('target').textContent = r[1];
+  byId('range').textContent = '±' + (100*r[column]).toFixed(2) + '%';
+  byId('actual').textContent = signed(100*r[2],2) + '%';
+  byId('outcome').textContent = inside ? 'Inside' : 'Outside';
+  byId('outcome').style.color = inside ? '#026c65' : '#a84525';
+  byId('previous').disabled = index===0; byId('next').disabled = index===rows.length-1;
+  slider.setAttribute('aria-valuetext',r[1]); draw();
+}
+function renderScores() {
+  const data = study.scores.filter(r=>r.sample===sample.value);
+  const selected = data[Number(model.value)];
+  byId('count').textContent=selected.sessions;
+  byId('coverage').textContent=selected.coverage_pct.toFixed(1)+'%';
+  byId('width').textContent=selected.mean_half_width_pct.toFixed(2)+'%';
+  byId('gap').textContent=signed(selected.qlike_gap_vs_benchmark,3);
+  const body=byId('scores');body.replaceChildren();
+  data.forEach(r=>{
+    const tr=document.createElement('tr');
+    if(r.model===selected.model) tr.className='selected';
+    const interval = r.model===study.models[1] ? 'Reference' : r.ci_low===null ? '—' :
+      signed(r.ci_low,3)+' to '+signed(r.ci_high,3);
+    [r.model, r.inside+' / '+r.sessions, r.mean_half_width_pct.toFixed(2)+'%',
+     signed(r.qlike_gap_vs_benchmark,3),interval].forEach(value=>{
+      const cell=document.createElement('td');cell.textContent=value;tr.appendChild(cell);
+    });
+    body.appendChild(tr);
+  });
+  const sensitivity = sample.value===Object.keys(study.samples)[1];
+  byId('sample-note').textContent = sensitivity
+    ? 'March, June, September and December are excluded. Each model warms up again after every excluded month. A negative QLIKE gap favors the model.'
+    : 'Lower QLIKE loss is better. A negative gap favors the model. The paired 95% block-bootstrap interval shows uncertainty in the average gap.';
+  byId('snapshot').hidden = sensitivity;
+  const sigma = study.latest[Number(model.value)], price = study.source.last_close_price;
+  const points = price * sigma;
+  const format = (n, decimals) => n.toLocaleString('en-US', {minimumFractionDigits:decimals, maximumFractionDigits:decimals});
+  byId('as-of').textContent = selected.model + ' using prices through ' + study.source.last_close +
+    '. The following session falls beyond this historical test.';
+  byId('last-price').textContent = format(price,2);
+  byId('next-vol').textContent = format(100*sigma,2)+'%';
+  byId('next-points').textContent = format(points,1);
+  byId('next-band').textContent = format(price-points,1)+' to '+format(price+points,1);
+  renderDate();
+}
+function choose(index) {slider.value=index;renderDate();}
+function changeSample() {
+  slider.max=study.samples[sample.value].length-1;slider.value=slider.max;renderScores();
+}
+sample.addEventListener('change',changeSample);
+model.addEventListener('change',renderScores);
+slider.addEventListener('input',renderDate);
+byId('previous').onclick=()=>choose(Number(slider.value)-1);
+byId('next').onclick=()=>choose(Number(slider.value)+1);
+byId('last').onclick=()=>choose(slider.max);
+byId('largest').onclick=()=>{
+  const {rows}=state();
+  const best=rows.reduce((best,r,i)=>Math.abs(r[2])>Math.abs(rows[best][2])?i:best,0);
+  choose(best);
+};
+const all=Object.values(study.samples)[0];
+byId('period').textContent='Historical test · '+all[0][1]+' through '+all[all.length-1][1];
+changeSample();
+new ResizeObserver(draw).observe(canvas);
+</script></body></html>
